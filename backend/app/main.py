@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.quote_agent import setup_langfuse_observability
-from app.api.routes import emails, quotes, search
+from app.api.routes import admin, emails, quotes, search
 from app.config import settings
 from app.db import close_pool, get_pool
 
@@ -37,6 +37,7 @@ app.add_middleware(
 app.include_router(search.router, prefix="/api/v1")
 app.include_router(emails.router, prefix="/api/v1")
 app.include_router(quotes.router, prefix="/api/v1")
+app.include_router(admin.router, prefix="/api/v1")
 
 
 @app.get("/health")
