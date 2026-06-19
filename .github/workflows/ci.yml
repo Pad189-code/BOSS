@@ -10,6 +10,9 @@ jobs:
   # ─── Backend checks ───────────────────────────────────────────────────────
   backend:
     runs-on: ubuntu-latest
+    env:
+      # Requis par pydantic Settings à l'import ; pas de connexion réelle en CI.
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
