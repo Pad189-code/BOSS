@@ -1,0 +1,14 @@
+.git
+.github
+frontend/
+frontend/node_modules/
+frontend/.next/
+**/__pycache__/
+**/*.pyc
+**/.venv/
+backend/.env
+backend/output/offres/*.docx
+*.docx
+!offre_de_prix_BOSS.docx
+~$*
+Prompt_Agent_IA OFP.docx

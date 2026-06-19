@@ -25,7 +25,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[],
+    allow_origins=settings.cors_origin_list,
     allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
@@ -48,4 +48,6 @@ async def health() -> dict[str, str | bool]:
         "mistral_configured": bool(settings.mistral_api_key),
         "openai_configured": bool(settings.openai_api_key),
         "ai_ready": bool(settings.mistral_api_key) if uses_mistral else bool(settings.openai_api_key),
+        "catalog_xlsx_present": settings.catalog_xlsx_path.is_file(),
+        "docx_template_present": settings.docx_template_path.is_file(),
     }

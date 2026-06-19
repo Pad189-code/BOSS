@@ -8,11 +8,10 @@ from pathlib import Path
 
 from docx import Document
 
+from app.config import settings
 from app.models.quote import OffreDetail, OffreDocxPayload, QuoteLineItemDashboard
 
-# BOSS/backend/app/services → racine projet
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-TEMPLATE_PATH = PROJECT_ROOT / "offre_de_prix_BOSS.docx"
+TEMPLATE_PATH = settings.docx_template_path
 OUTPUT_DIR = Path(__file__).resolve().parents[2] / "output" / "offres"
 
 # Table 3 : en-tête R0, lignes R1–R15, totaux R16–R18

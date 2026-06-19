@@ -19,6 +19,8 @@ from typing import Any
 
 from openpyxl import load_workbook
 
+from app.config import settings
+
 XLSX_COLUMN_ALIASES: dict[str, list[str]] = {
     "reference": ["référence", "reference"],
     "designation": ["désignation", "designation"],
@@ -244,15 +246,16 @@ def _print_parse_preview(rows: list[dict[str, Any]], limit: int = 3) -> None:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Ingestion catalogue Boss → PostgreSQL + pgvector")
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument(
+    parser.add_argument(
         "--xlsx",
         type=Path,
-        help="Fichier Excel BOSS (articles_industriels_1000.xlsx)",
+        default=None,
+        help=f"Fichier Excel BOSS (défaut : {settings.catalog_xlsx_path})",
     )
-    source.add_argument(
+    parser.add_argument(
         "--csv",
         type=Path,
+        default=None,
         help="CSV legacy : sku,name,description,category,unit_price",
     )
     parser.add_argument(
@@ -280,14 +283,18 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.xlsx:
-        if not args.xlsx.exists():
-            raise SystemExit(f"Fichier introuvable : {args.xlsx}")
-        rows = load_catalog_rows_from_xlsx(args.xlsx)
-    else:
+    if args.csv and args.xlsx:
+        raise SystemExit("Choisissez une seule source : --xlsx ou --csv")
+
+    if args.csv:
         if not args.csv.exists():
             raise SystemExit(f"Fichier introuvable : {args.csv}")
         rows = load_catalog_rows_from_csv(args.csv)
+    else:
+        xlsx_path = args.xlsx or settings.catalog_xlsx_path
+        if not xlsx_path.exists():
+            raise SystemExit(f"Fichier introuvable : {xlsx_path}")
+        rows = load_catalog_rows_from_xlsx(xlsx_path)
 
     if args.limit > 0:
         rows = rows[: args.limit]
