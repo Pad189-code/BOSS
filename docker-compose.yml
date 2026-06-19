@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: boss-postgres
+    environment:
+      POSTGRES_USER: boss
+      POSTGRES_PASSWORD: boss
+      POSTGRES_DB: boss
+    ports:
+      - "5433:5432"
+    volumes:
+      - boss_pg_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./database/migrations/001_quote_dashboard_fields.sql:/docker-entrypoint-initdb.d/02_migration_001.sql:ro
+      - ./database/migrations/002_email_external_id_unique.sql:/docker-entrypoint-initdb.d/03_migration_002.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U boss -d boss"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  boss_pg_data:
