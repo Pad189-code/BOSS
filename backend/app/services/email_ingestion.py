@@ -10,10 +10,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.header import decode_header
 from email.utils import parsedate_to_datetime, parseaddr
+from uuid import UUID
 
 from app.config import settings
 from app.db import get_pool
 from app.models.email import EmailSyncResult
+from app.services.webhook import notify_new_email
 
 
 @dataclass
@@ -181,21 +183,25 @@ def _fetch_recent_messages(*, limit: int) -> list[ParsedIncomingEmail]:
     return parsed
 
 
-async def import_message(pool, message: ParsedIncomingEmail) -> bool:
-    """Insère le mail s'il n'existe pas. Retourne True si importé."""
+async def import_message(pool, message: ParsedIncomingEmail) -> tuple[bool, UUID | None]:
+    """
+    Insère le mail s'il n'existe pas. 
+    Retourne (True, email_id) si importé, (False, None) sinon.
+    """
     existing = await pool.fetchval(
         "SELECT id FROM email_requests WHERE external_id = $1",
         message.external_id,
     )
     if existing:
-        return False
+        return False, None
 
-    await pool.execute(
+    email_id = await pool.fetchval(
         """
         INSERT INTO email_requests (
             external_id, provider, from_address, subject,
             body_text, body_html, received_at, status
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'received')
+        RETURNING id
         """,
         message.external_id,
         settings.mail_provider,
@@ -205,7 +211,7 @@ async def import_message(pool, message: ParsedIncomingEmail) -> bool:
         message.body_html,
         message.received_at,
     )
-    return True
+    return True, email_id
 
 
 async def sync_inbox(*, limit: int | None = None) -> EmailSyncResult:
@@ -226,10 +232,17 @@ async def sync_inbox(*, limit: int | None = None) -> EmailSyncResult:
 
     for message in messages:
         try:
-            imported = await import_message(pool, message)
-            if imported:
+            imported, email_id = await import_message(pool, message)
+            if imported and email_id:
                 result.imported += 1
                 result.message_ids.append(message.external_id)
+                # Envoyer notification webhook à Vercel
+                await notify_new_email(
+                    email_id=email_id,
+                    from_address=message.from_address,
+                    subject=message.subject,
+                    received_at=message.received_at,
+                )
             else:
                 result.skipped += 1
         except Exception as exc:
@@ -255,3 +268,4 @@ async def test_imap_connection() -> dict[str, str]:
         }
 
     return await asyncio.to_thread(_test)
+
