@@ -100,7 +100,6 @@ quote_agent = Agent(
     deps_type=QuoteAgentDeps,
     output_type=QuoteOffer,
     system_prompt=SYSTEM_PROMPT,
-    instrument=True,
 )
 
 
@@ -135,7 +134,6 @@ extraction_agent = Agent(
         "Extrais toutes les pièces de rechange demandées avec leurs quantités "
         "depuis le mail client. Réponds uniquement avec la structure demandée."
     ),
-    instrument=True,
 )
 
 
