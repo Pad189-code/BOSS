@@ -4,6 +4,11 @@ Endpoint :
   POST /api/v1/admin/init-db
     Exécute le schéma SQL complet (extensions, tables, indexes, triggers)
     et les migrations idempotentes.
+  
+  POST /api/v1/admin/sync-emails
+    Synchronise la boîte IMAP et importe les nouveaux emails.
+    (Peut être appelé par un cron job)
+
 """
 
 from __future__ import annotations
@@ -13,6 +18,8 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from app.db import get_pool
+from app.models.email import EmailSyncResult
+from app.services.email_ingestion import sync_inbox
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +184,7 @@ END $$;
 
 
 # ---------------------------------------------------------------------------
-# Endpoint
+# Endpoints
 # ---------------------------------------------------------------------------
 
 @router.post("/init-db")
@@ -229,3 +236,31 @@ async def init_db() -> dict:
             status_code=500,
             detail=f"Échec de l'initialisation : {exc}",
         ) from exc
+
+
+@router.post("/sync-emails", response_model=EmailSyncResult)
+async def sync_emails_cron() -> EmailSyncResult:
+    """Synchronise la boîte IMAP et importe les nouveaux emails.
+    
+    Endpoint destiné à être appelé par un cron job (ex: toutes les 5 minutes).
+    Récupère les derniers emails de la boîte IMAP et les importe en base.
+    
+    Retourne un résumé du nombre d'emails importés, ignorés et erreurs.
+    """
+    try:
+        result = await sync_inbox()
+        logger.info(
+            "sync-emails: fetched=%d imported=%d skipped=%d errors=%d",
+            result.fetched,
+            result.imported,
+            result.skipped,
+            len(result.errors),
+        )
+        return result
+    except ValueError as exc:
+        logger.error("sync-emails: configuration error: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("sync-emails: unexpected error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
