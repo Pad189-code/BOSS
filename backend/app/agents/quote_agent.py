@@ -1,6 +1,6 @@
 """
 Agent PydanticAI Boss — extraction mail, recherche catalogue, offre structurée.
-Observabilité : Langfuse via OpenTelemetry (Agent.instrument_all + instrument=True).
+Observabilité : Langfuse via OpenTelemetry (Agent.instrument_all).
 """
 
 from __future__ import annotations
@@ -100,7 +100,6 @@ quote_agent = Agent(
     deps_type=QuoteAgentDeps,
     output_type=QuoteOffer,
     system_prompt=SYSTEM_PROMPT,
-    instrument=True,
 )
 
 
@@ -135,7 +134,6 @@ extraction_agent = Agent(
         "Extrais toutes les pièces de rechange demandées avec leurs quantités "
         "depuis le mail client. Réponds uniquement avec la structure demandée."
     ),
-    instrument=True,
 )
 
 
@@ -182,3 +180,4 @@ async def build_quote_lines_from_parts(parts: list[ExtractedPart]) -> list[Quote
             continue
         lines.append(line_item_from_catalog_match(part.description, part.quantity, match))
     return lines
+
