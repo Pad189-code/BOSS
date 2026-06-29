@@ -1,6 +1,6 @@
 """Routes d'administration — initialisation de la base de données.
 
-Endpoint :
+Endpoints :
   POST /api/v1/admin/init-db
     Exécute le schéma SQL complet (extensions, tables, indexes, triggers)
     et les migrations idempotentes.
@@ -8,18 +8,28 @@ Endpoint :
   POST /api/v1/admin/sync-emails
     Synchronise la boîte IMAP et importe les nouveaux emails.
     (Peut être appelé par un cron job)
+  
+  POST /api/v1/admin/ingest-catalog
+    Ingère le catalogue articles_industriels_1000.xlsx avec embeddings pgvector.
+    Génère les vecteurs d'embedding pour chaque article.
 
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
+from app.config import settings
 from app.db import get_pool
 from app.models.email import EmailSyncResult
 from app.services.email_ingestion import sync_inbox
+from app.services.embeddings import generate_embedding
+from app.services.vector_search import _embedding_to_pgvector_literal
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +194,181 @@ END $$;
 
 
 # ---------------------------------------------------------------------------
+# Catalog ingestion helpers
+# ---------------------------------------------------------------------------
+
+def _normalize_header(value) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
+def _parse_en_stock(value) -> bool:
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"oui", "yes", "true", "1"}
+
+
+def _build_metadata(*, conditionnement: int, en_stock: bool, delai_livraison: str) -> dict:
+    return {
+        "conditionnement": conditionnement,
+        "en_stock": en_stock,
+        "delai_livraison": delai_livraison,
+        "prix_unite": "boite",
+    }
+
+
+def _build_description(*, conditionnement: int, en_stock: bool, delai_livraison: str) -> str:
+    stock_label = "en stock" if en_stock else "sur commande"
+    return (
+        f"Boîte de {conditionnement} pièces — {stock_label} — "
+        f"délai {delai_livraison}"
+    )
+
+
+def load_catalog_from_xlsx(xlsx_path: Path) -> list[dict]:
+    """Lit articles_industriels_1000.xlsx et retourne des lignes normalisées."""
+    from openpyxl import load_workbook
+
+    XLSX_COLUMN_ALIASES = {
+        "reference": ["référence", "reference"],
+        "designation": ["désignation", "designation"],
+        "conditionnement": [
+            "qtité conditionnement",
+            "qtite conditionnement",
+            "quantité conditionnement",
+            "qte conditionnement",
+        ],
+        "alliage": ["alliage"],
+        "prix_boite": ["prix boîte (€)", "prix boite (€)", "prix boîte", "prix boite"],
+        "en_stock": ["en stock"],
+        "delai_livraison": ["délai livraison", "delai livraison"],
+    }
+
+    workbook = load_workbook(xlsx_path, read_only=True, data_only=True)
+    worksheet = workbook.active
+
+    rows_iter = worksheet.iter_rows(values_only=True)
+    headers = list(next(rows_iter))
+
+    # Map headers
+    normalized = {_normalize_header(h): idx for idx, h in enumerate(headers)}
+    column_map = {}
+    for field, aliases in XLSX_COLUMN_ALIASES.items():
+        for alias in aliases:
+            if alias in normalized:
+                column_map[field] = normalized[alias]
+                break
+        if field not in column_map:
+            raise ValueError(f"Colonne « {field} » introuvable. En-têtes : {headers}")
+
+    catalog_rows = []
+    for row in rows_iter:
+        if row is None or all(cell is None or str(cell).strip() == "" for cell in row):
+            continue
+
+        def _cell(idx):
+            return row[idx] if idx < len(row) else None
+
+        reference = str(_cell(column_map["reference"])).strip()
+        designation = str(_cell(column_map["designation"])).strip()
+        if not reference or not designation:
+            continue
+
+        conditionnement = int(_cell(column_map["conditionnement"]))
+        alliage = str(_cell(column_map["alliage"])).strip()
+        prix_boite = float(_cell(column_map["prix_boite"]))
+        en_stock = _parse_en_stock(_cell(column_map["en_stock"]))
+        delai_livraison = str(_cell(column_map["delai_livraison"])).strip()
+
+        catalog_rows.append({
+            "sku": reference,
+            "name": designation,
+            "category": alliage,
+            "unit_price": prix_boite,
+            "stock_quantity": conditionnement if en_stock else 0,
+            "description": _build_description(
+                conditionnement=conditionnement,
+                en_stock=en_stock,
+                delai_livraison=delai_livraison,
+            ),
+            "metadata": _build_metadata(
+                conditionnement=conditionnement,
+                en_stock=en_stock,
+                delai_livraison=delai_livraison,
+            ),
+        })
+
+    workbook.close()
+    return catalog_rows
+
+
+async def ingest_catalog_rows(rows: list[dict]) -> dict:
+    """Ingère les articles avec embeddings pgvector."""
+    pool = await get_pool()
+    imported = 0
+    errors = []
+
+    for idx, row in enumerate(rows, start=1):
+        try:
+            # Générer embedding
+            text_for_embed = " | ".join(filter(None, [
+                row["sku"],
+                row["name"],
+                row.get("description") or "",
+                row.get("category") or "",
+            ]))
+            vector = await generate_embedding(text_for_embed)
+            literal = _embedding_to_pgvector_literal(vector)
+
+            # Insérer en base
+            await pool.execute(
+                """
+                INSERT INTO catalog_items (
+                    sku, name, description, category, unit_price,
+                    stock_quantity, metadata, embedding
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::vector)
+                ON CONFLICT (sku) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    description = EXCLUDED.description,
+                    category = EXCLUDED.category,
+                    unit_price = EXCLUDED.unit_price,
+                    stock_quantity = EXCLUDED.stock_quantity,
+                    metadata = EXCLUDED.metadata,
+                    embedding = EXCLUDED.embedding,
+                    updated_at = NOW()
+                """,
+                row["sku"],
+                row["name"],
+                row.get("description"),
+                row.get("category"),
+                row["unit_price"],
+                row.get("stock_quantity", 0),
+                json.dumps(row.get("metadata", {})),
+                literal,
+            )
+            imported += 1
+
+            if idx % 50 == 0 or idx == len(rows):
+                logger.info(f"Ingestion {idx}/{len(rows)} — {row['sku']}")
+
+            # Pause pour éviter de surcharger l'API embedding
+            await asyncio.sleep(0.05)
+
+        except Exception as exc:
+            errors.append(f"{row.get('sku', '?')}: {exc}")
+            logger.error(f"Erreur ingestion {row.get('sku')}: {exc}")
+
+    return {
+        "status": "success" if not errors else "partial",
+        "imported": imported,
+        "total": len(rows),
+        "errors": errors,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -202,10 +387,10 @@ async def init_db() -> dict:
                 await conn.execute(_SQL_SCHEMA)
 
             # Vérification post-initialisation
-            extensions: list[str] = await conn.fetch(
+            extensions = await conn.fetch(
                 "SELECT extname FROM pg_extension WHERE extname IN ('vector', 'uuid-ossp')"
             )
-            tables: list[str] = await conn.fetch(
+            tables = await conn.fetch(
                 """
                 SELECT table_name
                 FROM information_schema.tables
@@ -263,4 +448,47 @@ async def sync_emails_cron() -> EmailSyncResult:
     except Exception as exc:
         logger.exception("sync-emails: unexpected error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/ingest-catalog")
+async def ingest_catalog_endpoint() -> dict:
+    """Ingère le catalogue articles_industriels_1000.xlsx avec embeddings pgvector.
+    
+    Lit le fichier Excel, génère les embeddings pour chaque article,
+    et les insère dans la base de données.
+    
+    Cet endpoint peut être appelé une seule fois ou pour mettre à jour le catalogue.
+    """
+    try:
+        xlsx_path = settings.catalog_xlsx_path
+        if not xlsx_path.exists():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Fichier catalogue introuvable : {xlsx_path}",
+            )
+
+        logger.info(f"Chargement catalogue depuis {xlsx_path}…")
+        rows = load_catalog_from_xlsx(xlsx_path)
+        logger.info(f"Catalogue chargé : {len(rows)} articles")
+
+        logger.info("Ingestion avec embeddings pgvector…")
+        result = await ingest_catalog_rows(rows)
+
+        logger.info(
+            "Ingestion terminée : imported=%d/%d errors=%d",
+            result["imported"],
+            result["total"],
+            len(result["errors"]),
+        )
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("ingest-catalog failed: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Échec de l'ingestion : {exc}",
+        ) from exc
 
