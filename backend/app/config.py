@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     mail_sync_limit: int = 20
     mail_sync_mark_read: bool = True
 
+    # Webhook pour notifier Vercel des nouveaux emails
+    vercel_webhook_url: str | None = None
+
     @field_validator("catalog_xlsx_path", "docx_template_path", mode="before")
     @classmethod
     def _resolve_path(cls, value: str | Path) -> Path:
@@ -52,3 +55,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+

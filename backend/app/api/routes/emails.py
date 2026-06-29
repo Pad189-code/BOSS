@@ -14,6 +14,7 @@ from app.services.quote_mappers import (
     offer_to_agent_metadata,
     quote_line_to_dashboard,
 )
+from app.services.webhook import notify_email_processed
 
 router = APIRouter(prefix="/emails", tags=["Réception mail"])
 
@@ -181,8 +182,16 @@ async def process_incoming_email(email_request_id: UUID):
         email_request_id,
     )
 
+    # Envoyer notification webhook à Vercel
+    await notify_email_processed(
+        email_id=email_request_id,
+        quote_id=quote_id,
+        numero_offre=numero_offre,
+    )
+
     return EmailProcessResult(
         email_request_id=email_request_id,
         quote_id=quote_id,
         numero_offre=numero_offre,
     )
+
